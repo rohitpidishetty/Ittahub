@@ -39,7 +39,7 @@ public class ApplicationEndPoints {
 
     private BlobServiceClient blobServiceClient;
 
-    public ApplicationEndPoints(@Value("${firebase.sdk}") String SDK, @Value("${storage.connection_string}") String connectionString, @Value("${storage.name}") String storageName) throws Exception {
+    public ApplicationEndPoints(@Value("${SDK}") String SDK, @Value("${CONNECTION}") String connectionString, @Value("${STORAGE}") String storageName) throws Exception {
 
         this.blobServiceClient = new BlobServiceClientBuilder()
                 .connectionString(connectionString)
@@ -150,3 +150,4 @@ public class ApplicationEndPoints {
     }
 
 }
+
