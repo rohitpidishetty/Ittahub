@@ -1,6 +1,6 @@
 package com.ittahub.ITTaHub.Configuration;
 
-import com.azure.core.http.HttpMethod;
+import org.springframework.http.HttpMethod;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -22,7 +22,7 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth ->
                         auth
-                                .requestMatchers(String.valueOf(HttpMethod.OPTIONS), "/**")
+                                 .requestMatchers(HttpMethod.OPTIONS, "/**")
                                 .permitAll()
                                 .anyRequest()
                                 .permitAll()
@@ -51,4 +51,5 @@ public class SecurityConfig {
         return source;
     }
 }
+
 
