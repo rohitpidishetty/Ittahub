@@ -37,6 +37,7 @@ public class CloudDriverService {
         container_id = new String(Base64.getDecoder().decode(container_id), StandardCharsets.UTF_8);
         name = new String(Base64.getDecoder().decode(name), StandardCharsets.UTF_8);
         desc = new String(Base64.getDecoder().decode(desc), StandardCharsets.UTF_8);
+        if(desc.length() == 0) desc = "";
         BlobContainerClient container = blobServiceClient.getBlobContainerClient(container_id);
 
 //        Any duplicates ?
@@ -45,7 +46,7 @@ public class CloudDriverService {
                 return ResponseEntity.status(HttpStatus.CONFLICT).body("File with give name " + name + " already exists");
 
         try {
-            String fileContent = (desc.isEmpty() ? "" : desc) + "\nFile has been created by " + email + " at " + System.currentTimeMillis();
+            String fileContent = "\nFile has been created by " + email + " at " + System.currentTimeMillis();
             BlobClient readmeBlob = container.getBlobClient(name + "/INIT_README.txt");
             readmeBlob.upload(new ByteArrayInputStream(fileContent.getBytes()), fileContent.length(), true);
         } catch (Exception e) {
@@ -324,3 +325,4 @@ public class CloudDriverService {
     }
 
 }
+
