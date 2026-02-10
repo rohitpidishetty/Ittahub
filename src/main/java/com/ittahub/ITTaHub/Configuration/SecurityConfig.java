@@ -35,7 +35,7 @@ public class SecurityConfig {
         CorsConfiguration config = new CorsConfiguration();
 
         config.setAllowedOriginPatterns(
-                List.of("http://localhost:3000")
+                List.of("http://localhost:3000", "https://ittahub.web.app")
         );
 
         config.setAllowedMethods(
@@ -51,3 +51,4 @@ public class SecurityConfig {
         return source;
     }
 }
+
