@@ -7,7 +7,7 @@ import java.util.regex.Pattern;
 @Component
 public class Validator {
     public boolean emailAddress(String email) {
-        return Pattern.matches("^[a-zA-Z]+[a-zA-Z0-9]*@(gmail|icloud|outlook|yahoo|hotmail)\\.com$", email);
+        return Pattern.matches("^[a-zA-Z0-9._%+-]+@gmail\\.com$", email);
     }
 
     public boolean phoneNumber(String phone) {
@@ -24,3 +24,4 @@ public class Validator {
         return Pattern.matches("^[A-Za-z]+$", name);
     }
 }
+
