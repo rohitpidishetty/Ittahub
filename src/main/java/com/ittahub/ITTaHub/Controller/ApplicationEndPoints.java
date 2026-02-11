@@ -149,5 +149,13 @@ public class ApplicationEndPoints {
         return authServices.getUserDetails(email, fsClient);
     }
 
-}
+    @GetMapping("/clone-repository")
+    public ResponseEntity<String> cloneRepo(@RequestParam("clone_from_container") String clone_from_container, @RequestParam("clone_from_node") String clone_from_node, @RequestParam("clone_to_container") String clone_to_container, @RequestParam("clone_to_node") String clone_to_node, @RequestParam("user") String user) {
+        return cloudDriverService.cloneRepoService(clone_from_container, clone_from_node, clone_to_container, clone_to_node, user, blobServiceClient);
+    }
 
+    @GetMapping("/download-repository")
+    public ResponseEntity<StreamingResponseBody> downloadRepo(@RequestParam("clone_from_container") String clone_from_container, @RequestParam("clone_from_node") String clone_from_node) {
+        return cloudDriverService.downloadRepoService(clone_from_container, clone_from_node, blobServiceClient);
+    }
+}
