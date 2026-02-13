@@ -52,7 +52,7 @@ public class RateLimiterFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) throws ServletException {
         String path = request.getRequestURI();
-        return path.startsWith("/auth-service/is-authorized") || path.startsWith("/auth-service/user-repositories") || path.startsWith("/auth-service/repository-content") || path.startsWith("/auth-service/shared-repository-content") || path.startsWith("/auth-service/shared-file-viewer") || path.startsWith("/auth-service/file-viewer");
+        return path.startsWith("/auth-service/is-authorized") || path.startsWith("/auth-service/user-repositories") || path.startsWith("/auth-service/repository-content") || path.startsWith("/auth-service/shared-repository-content") || path.startsWith("/auth-service/shared-file-viewer") || path.startsWith("/auth-service/file-viewer") || path.startsWith("/auth-service/ittah-cli-upload-file-to-storage");
     }
 
     @Override
@@ -102,5 +102,6 @@ public class RateLimiterFilter extends OncePerRequestFilter {
     }
 
 }
+
 
 
