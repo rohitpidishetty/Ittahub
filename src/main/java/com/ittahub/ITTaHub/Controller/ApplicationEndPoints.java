@@ -108,6 +108,11 @@ public class ApplicationEndPoints {
     public ResponseEntity<String> uploadFileToStorage(@RequestParam("id") String id, @RequestParam("relativePath") String relativePath, @RequestParam("payload") MultipartFile payload) throws Exception {
         return cloudDriverService.uploadFileToStorageService(id, relativePath, payload, blobServiceClient);
     }
+    
+    @PostMapping("/ittah-cli-upload-file-to-storage")
+    public ResponseEntity<String> cliUploadFileToStorage(@RequestParam("id") String id, @RequestParam("relativePath") String relativePath, @RequestParam("payload") MultipartFile payload) throws Exception {
+        return cloudDriverService.uploadFileToStorageService(id, relativePath, payload, blobServiceClient);
+    }
 
     @PostMapping("/upload-files-to-storage")
     public ResponseEntity<String> uploadFilesToStorage(@RequestParam("id") String id, @RequestParam("files") List<MultipartFile> files, @RequestParam("relativePath") List<String> relativePath) throws Exception {
@@ -159,3 +164,4 @@ public class ApplicationEndPoints {
         return cloudDriverService.downloadRepoService(clone_from_container, clone_from_node, blobServiceClient);
     }
 }
+
