@@ -8,15 +8,21 @@ import com.azure.storage.blob.models.BlobContainerItem;
 import com.azure.storage.blob.models.BlobItem;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.firebase.database.core.Repo;
 import com.ittahub.ITTaHub.Utility.*;
 
 import java.io.*;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -24,504 +30,886 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import software.amazon.awssdk.core.ResponseInputStream;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.*;
 
 @Service
 public class CloudDriverService {
 
-    @Autowired
-    private RootFilePathBuilder rootFilePathBuilder;
+  @Autowired
+  private RootFilePathBuilder rootFilePathBuilder;
 
-    @Autowired
-    private Md5Hasher md5;
+  @Autowired
+  private Md5Hasher md5;
 
-    @Autowired
-    private EmailUser email;
+  @Autowired
+  private EmailUser email;
 
-    public ResponseEntity<String> createNewRepository(
-            String email,
-            String container_id,
-            String name,
-            String desc,
-            BlobServiceClient blobServiceClient
-    ) {
-        email = new String(
-                Base64.getDecoder().decode(email),
-                StandardCharsets.UTF_8
-        );
-        container_id = new String(
-                Base64.getDecoder().decode(container_id),
-                StandardCharsets.UTF_8
-        );
-        name = new String(Base64.getDecoder().decode(name), StandardCharsets.UTF_8);
-        desc = new String(Base64.getDecoder().decode(desc), StandardCharsets.UTF_8);
-        if (desc.length() == 0) desc = "";
-        BlobContainerClient container = blobServiceClient.getBlobContainerClient(
-                container_id
-        );
+  @Autowired
+  private S3Client s3Client;
 
-        //        Any duplicates ?
-        for (BlobItem blobItem : container.listBlobs())
-            if (
-                    blobItem.getName().split("/")[0].equals(name)
-            ) return ResponseEntity.status(HttpStatus.CONFLICT).body(
-                    "File with give name " + name + " already exists"
-            );
 
-        try {
-            String fileContent =
-                    desc + "\nFile has been created by " +
-                            email +
-                            " at " +
-                            System.currentTimeMillis();
-            BlobClient readmeBlob = container.getBlobClient(
-                    name + "/INIT_README.txt"
-            );
-            readmeBlob.upload(
-                    new ByteArrayInputStream(fileContent.getBytes()),
-                    fileContent.length(),
-                    true
-            );
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.EXPECTATION_FAILED).body(
-                    "Could not process request at this time, please try again later"
-            );
-        }
+  public ResponseEntity<String> createNewRepository(String email, String container_id, String name, String desc) {
+    email = new String(Base64.getDecoder().decode(email), StandardCharsets.UTF_8);
+    container_id = new String(Base64.getDecoder().decode(container_id), StandardCharsets.UTF_8);
+    name = new String(Base64.getDecoder().decode(name), StandardCharsets.UTF_8);
+    desc = new String(Base64.getDecoder().decode(desc), StandardCharsets.UTF_8);
+    desc = desc.concat(String.format("\nCreated by %s, at %d", email, System.currentTimeMillis()));
 
-        return ResponseEntity.status(HttpStatus.OK).body("Success");
+
+    if (!s3Client.listObjectsV2(ListObjectsV2Request.builder().bucket("ittahub").prefix(container_id + "/" + name + "/").maxKeys(1).build()).contents().isEmpty())
+      return ResponseEntity.status(HttpStatus.CONFLICT).body("File with give name " + name + " already exists");
+
+    String key = container_id + "/" + name + "/INIT_README.txt";
+
+    try {
+      PutObjectRequest request = PutObjectRequest.builder().bucket("ittahub").key(key).contentType("text/plain").build();
+
+      s3Client.putObject(request, RequestBody.fromString(desc));
+    } catch (Exception e) {
+      return ResponseEntity.status(HttpStatus.EXPECTATION_FAILED).body("Could not process request at this time, please try again later");
+    }
+    return ResponseEntity.status(HttpStatus.OK).body("Success");
+  }
+
+  public static class RepoDetails {
+
+    protected String repoName;
+    protected String root;
+    protected String repoDescription;
+    protected Set<String> files;
+
+    public RepoDetails(String repoName,
+                       String repoDescription,
+                       String root,
+                       HashSet<String> set) {
+
+      this.files = new HashSet<>();
+      this.repoDescription = repoDescription;
+      this.repoName = repoName;
+      this.root = root;
     }
 
-    public static class RepoDetails {
-
-        protected String repoName;
-        protected String root;
-        protected String repoDescription;
-        protected Set<String> files;
-
-        public RepoDetails(
-                String repoName,
-                String repoDescription,
-                Set<String> files,
-                String root
-        ) {
-            this.repoName = repoName;
-            this.repoDescription = repoDescription;
-            this.files = files;
-            this.root = root;
-        }
-
-        public String getRepoName() {
-            return this.repoName;
-        }
-
-        public String getRepoDescription() {
-            return this.repoDescription;
-        }
-
-        public String getRoot() {
-            return this.root;
-        }
-
-        public Set<String> getFiles() {
-            return this.files;
-        }
+    public RepoDetails(String repoName, String repoDescription, Set<String> files, String root) {
+      this.repoName = repoName;
+      this.repoDescription = repoDescription;
+      this.files = files;
+      this.root = root;
     }
 
-    public ResponseEntity<LinkedHashMap<String, RepoDetails>> repositories(
-            String id,
-            BlobServiceClient blobServiceClient
-    ) {
-        System.out.println(id + " ---> ");
-        BlobContainerClient container = blobServiceClient.getBlobContainerClient(
-                id
-        );
-        LinkedHashMap<String, Set<String>> extensions = new LinkedHashMap<>();
-        LinkedHashMap<String, RepoDetails> repo = new LinkedHashMap<>();
-
-        try {
-
-            for (BlobItem blob : container.listBlobs()) {
-                String rootFolder = blob.getName();
-                String forFile = rootFolder.substring(0, rootFolder.indexOf("/"));
-                if (!extensions.containsKey(forFile)) extensions.put(
-                        forFile,
-                        new LinkedHashSet<>()
-                );
-                else extensions
-                        .get(forFile)
-                        .add(rootFolder.substring(rootFolder.lastIndexOf(".") + 1));
-            }
-
-            for (BlobItem blob : container.listBlobs()) {
-                String rootFolder = blob.getName();
-                if (rootFolder.endsWith("/INIT_README.txt")) {
-                    BlobClient readmeBlob = container.getBlobClient(rootFolder);
-                    String readMeContent = readmeBlob.downloadContent().toString();
-                    String file = rootFolder.substring(0, rootFolder.indexOf("/"));
-                    repo.put(
-                            file,
-                            new RepoDetails(file, readMeContent, extensions.get(file), id)
-                    );
-                }
-            }
-        } catch (Exception e) {
-            System.out.println(e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
-        }
-
-        return ResponseEntity.status(HttpStatus.OK).body(repo);
+    public String getRepoName() {
+      return this.repoName;
     }
 
-    public ResponseEntity<String> viewUserRepo(
-            String root,
-            BlobServiceClient blobServiceClient,
-            String id
-    ) throws JsonProcessingException {
-        try {
-            root = new String(
-                    Base64.getDecoder().decode(root.getBytes()),
-                    StandardCharsets.UTF_8
-            );
-
-            BlobContainerClient containerClient =
-                    blobServiceClient.getBlobContainerClient(id);
-
-            List<String> hasPaths = new ArrayList<>();
-            boolean fileTree = false;
-            for (BlobItem blob : containerClient.listBlobs()) {
-                if (blob.getName().startsWith(root)) {
-                    hasPaths.add(blob.getName());
-                    fileTree = true;
-                }
-            }
-            String[] relativePaths = new String[hasPaths.size()];
-            int idx = 0;
-            for (String path : hasPaths) relativePaths[idx++] = path;
-            ObjectMapper mapper = new ObjectMapper();
-            if (fileTree) {
-                String jsonString = mapper
-                        .writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(rootFilePathBuilder.addPaths(relativePaths).buildTree().normalize());
-
-                return ResponseEntity.status(HttpStatus.OK).body(jsonString);
-            } else return ResponseEntity.status(
-                    HttpStatus.INTERNAL_SERVER_ERROR
-            ).body("Root file has been deleted");
-        } catch (Exception e) {
-            System.out.println(e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                    "Please refresh"
-            );
-        }
+    public String getRepoDescription() {
+      return this.repoDescription;
     }
 
-    public ResponseEntity<String> sharedRepoView(
-            String root,
-            String repo,
-            BlobServiceClient blobServiceClient
-    ) throws JsonProcessingException {
-        root = new String(
-                Base64.getDecoder().decode(root.getBytes()),
-                StandardCharsets.UTF_8
-        );
-        repo = new String(
-                Base64.getDecoder().decode(repo.getBytes()),
-                StandardCharsets.UTF_8
-        );
-
-        try {
-            BlobContainerClient containerClient =
-                    blobServiceClient.getBlobContainerClient(root);
-
-            List<String> hasPaths = new ArrayList<>();
-            boolean fileTree = false;
-            for (BlobItem blob : containerClient.listBlobs()) {
-                if (blob.getName().startsWith(repo)) {
-                    hasPaths.add(blob.getName());
-                    fileTree = true;
-                }
-            }
-            String[] relativePaths = new String[hasPaths.size()];
-            int idx = 0;
-            for (String path : hasPaths) relativePaths[idx++] = path;
-            ObjectMapper mapper = new ObjectMapper();
-            if (fileTree) {
-                String jsonString = mapper
-                        .writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(rootFilePathBuilder.addPaths(relativePaths).buildTree().normalize());
-
-                return ResponseEntity.status(HttpStatus.OK).body(jsonString);
-            }
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("File not present");
-        } catch (
-                Exception e) {
-            return ResponseEntity.status(HttpStatus.NO_CONTENT).body(e.getMessage());
-        }
+    public String getRoot() {
+      return this.root;
     }
 
-    public ResponseEntity<String> uploadFileToStorageService(
-            String id,
-            String relativePath,
-            MultipartFile payload,
-            BlobServiceClient blobServiceClient
-    ) {
-        BlobContainerClient containerClient =
-                blobServiceClient.getBlobContainerClient(id);
-        BlobClient blob = containerClient.getBlobClient(relativePath);
-        try {
-            blob.upload(payload.getInputStream(), payload.getSize(), true);
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body("Try again!!");
-        }
-        return ResponseEntity.status(HttpStatus.OK).body("Success");
+    public Set<String> getFiles() {
+      return this.files;
     }
+  }
 
-    public ResponseEntity<String> uploadFilesToStorageService(
-            String id,
-            List<MultipartFile> files,
-            List<String> paths,
-            BlobServiceClient blobServiceClient
-    ) {
-        BlobContainerClient containerClient =
-                blobServiceClient.getBlobContainerClient(id);
+  @Value("${aws.s3.bucket}")
+  private String bucket;
 
-        int i = 0;
-        int n = files.size();
-        while (i < n) {
-            BlobClient blob = containerClient.getBlobClient(paths.get(i));
-            try {
-                blob.upload(
-                        files.get(i).getInputStream(),
-                        files.get(i).getSize(),
-                        true
-                );
-            } catch (IOException e) {
-                return ResponseEntity.status(HttpStatus.CONFLICT).body("Try again!!");
-            }
-            i++;
-        }
+  public ResponseEntity<LinkedHashMap<String, RepoDetails>> repositories(String id) {
 
-        return ResponseEntity.status(HttpStatus.OK).body("Success");
-    }
+    System.out.println("Repos for id " + id);
+    LinkedHashMap<String, RepoDetails> repo = new LinkedHashMap<>();
 
-    public ResponseEntity<StreamingResponseBody> viewFileContentService(
-            String id,
-            String file,
-            BlobServiceClient blobServiceClient
-    ) {
-        try {
+    try {
+      ListObjectsV2Request request = ListObjectsV2Request.builder().bucket(bucket).prefix(id + "/").build();
+      List<S3Object> res = s3Client.listObjectsV2(request).contents();
+      if (res.isEmpty()) return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
 
-            BlobContainerClient containerClient =
-                    blobServiceClient.getBlobContainerClient(id);
-            BlobClient blob = containerClient.getBlobClient(file);
-
-            if (!blob.exists()) return ResponseEntity.status(
-                    HttpStatus.NOT_FOUND
-            ).body(null);
-
-            StreamingResponseBody stream = new StreamingResponseBody() {
-                @Override
-                public void writeTo(OutputStream outputStream) throws IOException {
-                    outputStream.write(blob.downloadContent().toBytes());
-                }
-            };
-
-            return ResponseEntity.status(HttpStatus.OK)
-                    .header("Content-Disposition", "attachment; filename=\"" + file + "\"")
-                    .body(stream);
-        } catch (Exception e) {
-            System.out.println(e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
-        }
-    }
-
-    public ResponseEntity<String> deleteBlobService(
-            String id,
-            String path,
-            BlobServiceClient blobServiceClient
-    ) {
-        BlobContainerClient containerClient =
-                blobServiceClient.getBlobContainerClient(id);
-//        System.out.println(id + " " + path);
-
-        try {
-            for (BlobItem blobItem : containerClient.listBlobs()) {
-                if (blobItem.getName().startsWith(path)) {
-                    BlobClient blob = containerClient.getBlobClient(blobItem.getName());
-                    blob.delete();
-                }
-            }
-            return ResponseEntity.status(HttpStatus.OK).body("Success");
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                    "Retry again"
-            );
-        }
-    }
-
-    public ResponseEntity<String> updateBlobService(
-            String id,
-            String path,
-            MultipartFile content,
-            BlobServiceClient blobServiceClient
-    ) {
-        BlobContainerClient containerClient =
-                blobServiceClient.getBlobContainerClient(id);
-        BlobClient blob = containerClient.getBlobClient(path);
-        try {
-            blob.upload(content.getInputStream(), content.getSize(), true);
-            return ResponseEntity.status(HttpStatus.OK).body("Success");
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                    "Try again"
-            );
-        }
-    }
-
-    public ResponseEntity<StreamingResponseBody> searchBlobService(
-            String search,
-            BlobServiceClient blobServiceClient,
-            Validator validate
-    ) {
-        LinkedList<String[]> response = new LinkedList<>();
-        if (validate.emailAddress(search)) {
-            String containerId = md5.hash(search);
-            try {
-                BlobContainerClient container =
-                        blobServiceClient.getBlobContainerClient(containerId);
-                if (!container.exists()) return ResponseEntity.status(
-                        HttpStatus.NOT_FOUND
-                ).body(null);
-
-                for (BlobItem blob : container.listBlobs()) {
-                    String folder = blob.getName();
-                    if (
-                            !folder.startsWith(containerId) &&
-                                    folder.endsWith("/INIT_README.txt")
-                    ) {
-                        BlobClient readmeBlob = container.getBlobClient(folder);
-                        String readMeContent = readmeBlob.downloadContent().toString();
-                        String file = folder.substring(0, folder.indexOf("/"));
-                        response.add(new String[]{containerId, file, readMeContent});
-                    }
-                }
-                StreamingResponseBody stream = new StreamingResponseBody() {
-                    @Override
-                    public void writeTo(OutputStream outputStream) throws IOException {
-                        String json = new ObjectMapper().writeValueAsString(response);
-                        outputStream.write(json.getBytes(StandardCharsets.UTF_8));
-                    }
-                };
-                return ResponseEntity.status(HttpStatus.OK).body(stream);
-            } catch (Exception e) {
-                System.out.println(e.getMessage());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                        null
-                );
-            }
+      for (S3Object obj : res) {
+        String path = obj.key();
+        String[] pathTokens = path.split("/");
+        if (pathTokens[pathTokens.length - 1].equals("INIT_README.txt")) {
+          GetObjectRequest getRequest = GetObjectRequest.builder().bucket(bucket).key(path).build();
+          repo.put(
+              pathTokens[1],
+              new RepoDetails(pathTokens[pathTokens.length - 2],
+                  s3Client.getObjectAsBytes(getRequest).asUtf8String(),
+                  pathTokens[0],
+                  new HashSet<String>())
+          );
         } else {
-            System.out.println("Search by file");
-            System.out.println(search);
-            LinkedHashSet<String> paths = new LinkedHashSet<>();
-            LinkedHashSet<String[]> data = new LinkedHashSet<>();
-
-            try {
-                for (BlobContainerItem bci : blobServiceClient.listBlobContainers()) {
-                    BlobContainerClient container =
-                            blobServiceClient.getBlobContainerClient(bci.getName());
-                    for (BlobItem blob : container.listBlobs()) {
-                        String containerName = bci.getName();
-                        String blobName = blob.getName();
-                        String blobPath = containerName + "/" + blobName;
-                        if (blobPath.toLowerCase().contains(search.toLowerCase())) {
-                            String sub_path = blobName.substring(0, blobName.indexOf("/"));
-                            String path = containerName + "/" + sub_path;
-                            if (!paths.contains(path)) {
-                                String readMe = sub_path + "/INIT_README.txt";
-                                BlobClient _blob_ = container.getBlobClient(readMe);
-                                String content = new String(
-                                        _blob_.downloadContent().toBytes(),
-                                        StandardCharsets.UTF_8
-                                );
-                                data.add(new String[]{containerName, sub_path, content});
-                                paths.add(path);
-                            }
-                        }
-                    }
-                }
-                StreamingResponseBody stream = new StreamingResponseBody() {
-                    @Override
-                    public void writeTo(OutputStream outputStream) throws IOException {
-                        String json = new ObjectMapper().writeValueAsString(data);
-                        outputStream.write(json.getBytes(StandardCharsets.UTF_8));
-                    }
-                };
-
-                return ResponseEntity.status(HttpStatus.OK).body(stream);
-            } catch (Exception e) {
-                System.out.println(e.getMessage());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                        null
-                );
-            }
+          if (pathTokens.length > 1)
+            repo.get(pathTokens[1]).files.add(pathTokens[pathTokens.length - 1].contains(".") ? (pathTokens[pathTokens.length - 1].split("[.]")[1]) : "");
         }
+      }
+
+    } catch (Exception e) {
+      return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
     }
 
-    public ResponseEntity<String> cloneRepoService(String clone_from_container, String clone_from_node, String clone_to_container, String clone_to_node, String user, BlobServiceClient blobServiceClient) {
-        final String _clone_from_container = new String(Base64.getDecoder().decode(clone_from_container.getBytes()), StandardCharsets.UTF_8);
-        final String _clone_from_node = new String(Base64.getDecoder().decode(clone_from_node.getBytes()), StandardCharsets.UTF_8);
-        final String _clone_to_container = new String(Base64.getDecoder().decode(clone_to_container.getBytes()), StandardCharsets.UTF_8);
-        final String _clone_to_node = new String(Base64.getDecoder().decode(clone_to_node.getBytes()), StandardCharsets.UTF_8);
-        final String _user = new String(Base64.getDecoder().decode(user.getBytes()), StandardCharsets.UTF_8);
-        CompletableFuture.runAsync(() -> {
-            BlobContainerClient sourceContainer = blobServiceClient.getBlobContainerClient(_clone_from_container);
-            BlobContainerClient targetContainer = blobServiceClient.getBlobContainerClient(_clone_to_container);
-            for (BlobItem blob : sourceContainer.listBlobs())
-                if (blob.getName().startsWith(_clone_from_node))
-                    targetContainer.getBlobClient(_clone_to_node + "/" + blob.getName())
-                            .upload(sourceContainer.getBlobClient(blob.getName()).downloadContent(), true);
-            String initContent = "File has been cloned by node" + _clone_to_container + ", from node" + _clone_from_container + " at " + System.currentTimeMillis();
-            targetContainer.getBlobClient(_clone_to_node + "/INIT_README.txt").upload(new ByteArrayInputStream(initContent.getBytes(StandardCharsets.UTF_8)), initContent.length(), true);
+    System.out.println(repo);
 
-            email.sendSimpleEmail(_user, "ITTaHub-Repo cloning status", _clone_from_node, _clone_to_node);
-        });
+    return ResponseEntity.status(HttpStatus.OK).body(repo);
+  }
 
-        return ResponseEntity.status(HttpStatus.OK).body("Cloning in progress. You will receive a notification when the operation is completed");
+
+  public ResponseEntity<String> viewUserRepo(String root, String id)
+      throws JsonProcessingException {
+
+    try {
+
+      root = new String(
+          Base64.getDecoder().decode(root.getBytes()),
+          StandardCharsets.UTF_8
+      );
+
+      String prefix = id + "/" + root;
+
+      ListObjectsV2Request request = ListObjectsV2Request.builder()
+          .bucket(bucket)
+          .prefix(prefix)
+          .build();
+
+      ListObjectsV2Response response = s3Client.listObjectsV2(request);
+
+      List<String> hasPaths = new ArrayList<>();
+
+      for (S3Object object : response.contents())
+        hasPaths.add(object.key());
+
+
+      boolean fileTree = !hasPaths.isEmpty();
+
+      String[] relativePaths = new String[hasPaths.size()];
+
+      int idx = 0;
+
+
+      for (String path : hasPaths)
+        relativePaths[idx++] = path.substring(id.length() + 1);
+
+
+      ObjectMapper mapper = new ObjectMapper();
+
+      if (fileTree) {
+
+        String jsonString = mapper
+            .writerWithDefaultPrettyPrinter()
+            .writeValueAsString(
+                rootFilePathBuilder
+                    .addPaths(relativePaths)
+                    .buildTree()
+                    .normalize()
+            );
+
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(jsonString);
+
+      } else {
+
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body("Root file has been deleted");
+      }
+
+    } catch (Exception e) {
+
+
+      return ResponseEntity
+          .status(HttpStatus.INTERNAL_SERVER_ERROR)
+          .body("Please refresh");
+    }
+  }
+
+
+  public ResponseEntity<StreamingResponseBody> viewFileContentService(
+      String id,
+      String file
+  ) {
+    try {
+
+      String key = id + "/" + file;
+
+      HeadObjectRequest headRequest = HeadObjectRequest.builder()
+          .bucket(bucket)
+          .key(key)
+          .build();
+
+      try {
+        s3Client.headObject(headRequest);
+      } catch (NoSuchKeyException e) {
+        return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(null);
+      }
+
+      StreamingResponseBody stream = outputStream -> {
+
+        GetObjectRequest getRequest = GetObjectRequest.builder()
+            .bucket(bucket)
+            .key(key)
+            .build();
+
+        try (ResponseInputStream<GetObjectResponse> inputStream =
+                 s3Client.getObject(getRequest)) {
+
+          inputStream.transferTo(outputStream);
+        }
+      };
+
+      return ResponseEntity
+          .status(HttpStatus.OK)
+          .header(
+              "Content-Disposition",
+              "attachment; filename=\"" +
+                  file.substring(file.lastIndexOf("/") + 1) +
+                  "\""
+          )
+          .body(stream);
+
+    } catch (Exception e) {
+
+      System.out.println(e.getMessage());
+
+      return ResponseEntity
+          .status(HttpStatus.INTERNAL_SERVER_ERROR)
+          .body(null);
+    }
+  }
+
+
+  public ResponseEntity<String> uploadFileToStorageService(
+      String id,
+      String relativePath,
+      MultipartFile payload
+  ) {
+    try {
+
+      String key = id + "/" + relativePath;
+
+      PutObjectRequest request = PutObjectRequest.builder()
+          .bucket(bucket)
+          .key(key)
+          .contentType(payload.getContentType())
+          .build();
+
+      s3Client.putObject(
+          request,
+          RequestBody.fromInputStream(
+              payload.getInputStream(),
+              payload.getSize()
+          )
+      );
+
+      return ResponseEntity
+          .status(HttpStatus.OK)
+          .body("Success");
+
+    } catch (IOException e) {
+
+      System.out.println(e.getMessage());
+
+      return ResponseEntity
+          .status(HttpStatus.CONFLICT)
+          .body("Try again!!");
+
+    } catch (Exception e) {
+
+      System.out.println(e.getMessage());
+
+      return ResponseEntity
+          .status(HttpStatus.INTERNAL_SERVER_ERROR)
+          .body("Try again!!");
+    }
+  }
+
+  public ResponseEntity<String> uploadFilesToStorageService(
+      String id,
+      List<MultipartFile> files,
+      List<String> paths
+  ) {
+
+    int i = 0;
+    int n = files.size();
+
+    while (i < n) {
+
+      try {
+
+        String key = id + "/" + paths.get(i);
+
+        PutObjectRequest request = PutObjectRequest.builder()
+            .bucket(bucket)
+            .key(key)
+            .contentType(files.get(i).getContentType())
+            .build();
+
+        s3Client.putObject(
+            request,
+            RequestBody.fromInputStream(
+                files.get(i).getInputStream(),
+                files.get(i).getSize()
+            )
+        );
+
+      } catch (IOException e) {
+
+        System.out.println(e.getMessage());
+
+        return ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .body("Try again!!");
+
+      } catch (Exception e) {
+
+        System.out.println(e.getMessage());
+
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body("Try again!!");
+      }
+
+      i++;
     }
 
-    public ResponseEntity<StreamingResponseBody> downloadRepoService(
-            String clone_from_container,
-            String clone_from_node,
-            BlobServiceClient blobServiceClient) {
-        final String _clone_from_container = new String(Base64.getDecoder()
-                .decode(clone_from_container.getBytes()), StandardCharsets.UTF_8);
-        final String _clone_from_node = new String(Base64.getDecoder()
-                .decode(clone_from_node.getBytes()), StandardCharsets.UTF_8);
-        BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(_clone_from_container);
-        if (!containerClient.exists())
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null);
-        StreamingResponseBody stream = outputStream -> {
-            try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(outputStream)) {
-                for (BlobItem blob : containerClient.listBlobs()) {
-                    System.out.println(blob.getName());
-                    if (blob.getName().startsWith(_clone_from_node)) {
-                        BlobClient bClient = containerClient.getBlobClient(blob.getName());
-                        zos.putNextEntry(new java.util.zip.ZipEntry(blob.getName()));
-                        try (InputStream is = bClient.openInputStream()) {
-                            byte[] buffer = new byte[8192];
-                            int read;
-                            while ((read = is.read(buffer)) != -1) {
-                                zos.write(buffer, 0, read);
-                            }
-                        }
-                    }
-                    zos.closeEntry();
+    return ResponseEntity
+        .status(HttpStatus.OK)
+        .body("Success");
+  }
+
+
+  public ResponseEntity<String> deleteBlobService(
+      String id,
+      String path
+  ) {
+
+    try {
+
+
+      String prefix = id + "/" + path;
+
+      ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+          .bucket(bucket)
+          .prefix(prefix)
+          .build();
+
+      ListObjectsV2Response response =
+          s3Client.listObjectsV2(listRequest);
+
+      for (S3Object object : response.contents()) {
+
+        DeleteObjectRequest deleteRequest = DeleteObjectRequest.builder()
+            .bucket(bucket)
+            .key(object.key())
+            .build();
+
+        s3Client.deleteObject(deleteRequest);
+      }
+
+      return ResponseEntity
+          .status(HttpStatus.OK)
+          .body("Success");
+
+    } catch (Exception e) {
+
+      System.out.println(e.getMessage());
+
+      return ResponseEntity
+          .status(HttpStatus.INTERNAL_SERVER_ERROR)
+          .body("Retry again");
+    }
+  }
+
+  public ResponseEntity<String> updateBlobService(
+      String id,
+      String path,
+      MultipartFile content
+  ) {
+
+    try {
+
+      String key = id + "/" + path;
+
+      PutObjectRequest request = PutObjectRequest.builder()
+          .bucket(bucket)
+          .key(key)
+          .contentType(content.getContentType())
+          .build();
+
+      s3Client.putObject(
+          request,
+          RequestBody.fromInputStream(
+              content.getInputStream(),
+              content.getSize()
+          )
+      );
+
+      return ResponseEntity
+          .status(HttpStatus.OK)
+          .body("Success");
+
+    } catch (IOException e) {
+
+
+      return ResponseEntity
+          .status(HttpStatus.INTERNAL_SERVER_ERROR)
+          .body("Try again");
+    }
+  }
+
+  public ResponseEntity<StreamingResponseBody> searchBlobService(
+      String search,
+      Validator validate
+  ) {
+
+    LinkedList<String[]> response = new LinkedList<>();
+
+    if (validate.emailAddress(search)) {
+
+      String containerId = md5.hash(search);
+
+      try {
+
+        String prefix = containerId + "/";
+
+        ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+            .bucket(bucket)
+            .prefix(prefix)
+            .build();
+
+        ListObjectsV2Response listResponse =
+            s3Client.listObjectsV2(listRequest);
+
+        if (listResponse.contents().isEmpty()) {
+          return ResponseEntity
+              .status(HttpStatus.NOT_FOUND)
+              .body(null);
+        }
+
+        for (S3Object object : listResponse.contents()) {
+
+          String key = object.key();
+
+          if (key.endsWith("/INIT_README.txt")) {
+
+            GetObjectRequest getRequest = GetObjectRequest.builder()
+                .bucket(bucket)
+                .key(key)
+                .build();
+
+            String readMeContent = s3Client
+                .getObjectAsBytes(getRequest)
+                .asUtf8String();
+
+            String relativePath = key.substring(prefix.length());
+
+            String file = relativePath.substring(
+                0,
+                relativePath.indexOf("/")
+            );
+
+            response.add(
+                new String[]{
+                    containerId,
+                    file,
+                    readMeContent
                 }
-                zos.finish();
-            }
+            );
+          }
+        }
+
+        StreamingResponseBody stream = outputStream -> {
+
+          String json = new ObjectMapper()
+              .writeValueAsString(response);
+
+          outputStream.write(
+              json.getBytes(StandardCharsets.UTF_8)
+          );
         };
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + _clone_from_node + ".zip\"")
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .body(stream);
+
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(stream);
+
+      } catch (Exception e) {
+
+        System.out.println(e.getMessage());
+
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(null);
+      }
+
+    } else {
+
+      System.out.println("Search by file");
+      System.out.println(search);
+
+      LinkedHashSet<String> paths = new LinkedHashSet<>();
+      LinkedList<String[]> data = new LinkedList<>();
+
+      try {
+
+        ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+            .bucket(bucket)
+            .build();
+
+        ListObjectsV2Response listResponse =
+            s3Client.listObjectsV2(listRequest);
+
+        for (S3Object object : listResponse.contents()) {
+
+          String key = object.key();
+
+          if (!key.toLowerCase().contains(search.toLowerCase()))
+            continue;
+
+          String[] tokens = key.split("/");
+
+          if (tokens.length < 2)
+            continue;
+
+          String containerId = tokens[0];
+          String repoName = tokens[1];
+
+          String repoPath = containerId + "/" + repoName;
+
+          if (paths.contains(repoPath))
+            continue;
+
+          String readmeKey =
+              containerId +
+                  "/" +
+                  repoName +
+                  "/INIT_README.txt";
+
+          try {
+
+            GetObjectRequest getRequest = GetObjectRequest.builder()
+                .bucket(bucket)
+                .key(readmeKey)
+                .build();
+
+            String content = s3Client
+                .getObjectAsBytes(getRequest)
+                .asUtf8String();
+
+            data.add(
+                new String[]{
+                    containerId,
+                    repoName,
+                    content
+                }
+            );
+
+            paths.add(repoPath);
+
+          } catch (Exception ignored) {
+          }
+        }
+
+        StreamingResponseBody stream = outputStream -> {
+
+          String json = new ObjectMapper()
+              .writeValueAsString(data);
+
+          outputStream.write(
+              json.getBytes(StandardCharsets.UTF_8)
+          );
+        };
+
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(stream);
+
+      } catch (Exception e) {
+
+        System.out.println(e.getMessage());
+
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(null);
+      }
     }
+  }
+
+
+  public ResponseEntity<StreamingResponseBody> downloadRepoService(
+      String clone_from_container,
+      String clone_from_node
+  ) {
+
+    final String _clone_from_container = new String(
+        Base64.getDecoder().decode(clone_from_container.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    final String _clone_from_node = new String(
+        Base64.getDecoder().decode(clone_from_node.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    String prefix =
+        _clone_from_container + "/" + _clone_from_node + "/";
+
+    ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+        .bucket(bucket)
+        .prefix(prefix)
+        .build();
+
+    ListObjectsV2Response listResponse =
+        s3Client.listObjectsV2(listRequest);
+
+    if (listResponse.contents().isEmpty()) {
+      return ResponseEntity
+          .status(HttpStatus.BAD_REQUEST)
+          .body(null);
+    }
+
+    StreamingResponseBody stream = outputStream -> {
+
+      try (ZipOutputStream zos = new ZipOutputStream(outputStream)) {
+
+        for (S3Object object : listResponse.contents()) {
+
+          String key = object.key();
+
+          if (key.endsWith("/"))
+            continue;
+
+          GetObjectRequest getRequest = GetObjectRequest.builder()
+              .bucket(bucket)
+              .key(key)
+              .build();
+
+          String relativePath = key.substring(
+              (_clone_from_container + "/").length()
+          );
+
+          zos.putNextEntry(
+              new ZipEntry(relativePath)
+          );
+
+          try (ResponseInputStream<GetObjectResponse> inputStream =
+                   s3Client.getObject(getRequest)) {
+
+            byte[] buffer = new byte[8192];
+
+            int read;
+
+            while ((read = inputStream.read(buffer)) != -1) {
+              zos.write(buffer, 0, read);
+            }
+          }
+
+          zos.closeEntry();
+        }
+
+        zos.finish();
+      }
+    };
+
+    return ResponseEntity
+        .ok()
+        .header(
+            HttpHeaders.CONTENT_DISPOSITION,
+            "attachment; filename=\"" + _clone_from_node + ".zip\""
+        )
+        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+        .body(stream);
+  }
+
+  public ResponseEntity<String> sharedRepoView(
+      String root,
+      String repo
+  ) throws JsonProcessingException {
+
+    root = new String(
+        Base64.getDecoder().decode(root.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    repo = new String(
+        Base64.getDecoder().decode(repo.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    try {
+
+      String prefix = root + "/" + repo + "/";
+
+      ListObjectsV2Request request = ListObjectsV2Request.builder()
+          .bucket(bucket)
+          .prefix(prefix)
+          .build();
+
+      ListObjectsV2Response response =
+          s3Client.listObjectsV2(request);
+
+      List<String> hasPaths = new ArrayList<>();
+
+      for (S3Object object : response.contents()) {
+
+        String key = object.key();
+
+        String relativePath = key.substring(
+            (root + "/").length()
+        );
+
+        hasPaths.add(relativePath);
+      }
+
+      String[] relativePaths =
+          hasPaths.toArray(new String[0]);
+
+      ObjectMapper mapper = new ObjectMapper();
+
+      if (!hasPaths.isEmpty()) {
+
+        String jsonString = mapper
+            .writerWithDefaultPrettyPrinter()
+            .writeValueAsString(
+                rootFilePathBuilder
+                    .addPaths(relativePaths)
+                    .buildTree()
+                    .normalize()
+            );
+
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(jsonString);
+      }
+
+      return ResponseEntity
+          .status(HttpStatus.BAD_REQUEST)
+          .body("File not present");
+
+    } catch (Exception e) {
+
+      System.out.println(e.getMessage());
+
+      return ResponseEntity
+          .status(HttpStatus.NO_CONTENT)
+          .body(e.getMessage());
+    }
+  }
+
+  public ResponseEntity<String> cloneRepoService(
+      String clone_from_container,
+      String clone_from_node,
+      String clone_to_container,
+      String clone_to_node,
+      String user
+  ) {
+
+    final String _clone_from_container = new String(
+        Base64.getDecoder().decode(clone_from_container.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    final String _clone_from_node = new String(
+        Base64.getDecoder().decode(clone_from_node.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    final String _clone_to_container = new String(
+        Base64.getDecoder().decode(clone_to_container.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    final String _clone_to_node = new String(
+        Base64.getDecoder().decode(clone_to_node.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    final String _user = new String(
+        Base64.getDecoder().decode(user.getBytes()),
+        StandardCharsets.UTF_8
+    );
+
+    CompletableFuture.runAsync(() -> {
+
+      try {
+
+        String sourcePrefix =
+            _clone_from_container + "/" + _clone_from_node + "/";
+
+        String targetPrefix =
+            _clone_to_container + "/" + _clone_to_node + "/";
+
+        ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+            .bucket(bucket)
+            .prefix(sourcePrefix)
+            .build();
+
+        ListObjectsV2Response response =
+            s3Client.listObjectsV2(listRequest);
+
+        for (S3Object object : response.contents()) {
+
+          String sourceKey = object.key();
+
+          if (sourceKey.endsWith("/"))
+            continue;
+
+          String relativePath = sourceKey.substring(
+              sourcePrefix.length()
+          );
+
+          String targetKey =
+              targetPrefix + relativePath;
+
+          CopyObjectRequest copyRequest = CopyObjectRequest.builder()
+              .sourceBucket(bucket)
+              .sourceKey(sourceKey)
+              .destinationBucket(bucket)
+              .destinationKey(targetKey)
+              .build();
+
+          s3Client.copyObject(copyRequest);
+        }
+
+        String initContent =
+            "File has been cloned by node " +
+                _clone_to_container +
+                ", from node " +
+                _clone_from_container +
+                " at " +
+                System.currentTimeMillis();
+
+        PutObjectRequest putRequest = PutObjectRequest.builder()
+            .bucket(bucket)
+            .key(targetPrefix + "INIT_README.txt")
+            .contentType("text/plain")
+            .build();
+
+        s3Client.putObject(
+            putRequest,
+            RequestBody.fromString(initContent)
+        );
+
+        email.sendSimpleEmail(
+            _user,
+            "ITTaHub-Repo cloning status",
+            _clone_from_node,
+            _clone_to_node
+        );
+
+      } catch (Exception e) {
+        System.out.println(e.getMessage());
+      }
+    });
+
+    return ResponseEntity
+        .status(HttpStatus.OK)
+        .body(
+            "Cloning in progress. You will receive a notification when the operation is completed"
+        );
+  }
 }

@@ -52,7 +52,7 @@ public class RateLimiterFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) throws ServletException {
         String path = request.getRequestURI();
-        return path.startsWith("/auth-service/is-authorized") || path.startsWith("/auth-service/user-repositories") || path.startsWith("/auth-service/repository-content") || path.startsWith("/auth-service/shared-repository-content") || path.startsWith("/auth-service/shared-file-viewer") || path.startsWith("/auth-service/file-viewer") || path.startsWith("/auth-service/ittah-cli-upload-file-to-storage");
+        return path.startsWith("/auth-service/is-authorized") || path.startsWith("/auth-service/user-repositories") || path.startsWith("/auth-service/repository-content") || path.startsWith("/auth-service/shared-repository-content");
     }
 
     @Override
@@ -60,7 +60,7 @@ public class RateLimiterFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
 
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
-            response.setHeader("Access-Control-Allow-Origin", "https://ittahub.web.app");
+            response.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
             response.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
             response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
             response.setHeader("Access-Control-Allow-Credentials", "true");
@@ -86,7 +86,7 @@ public class RateLimiterFilter extends OncePerRequestFilter {
 
         if (!token.allowRequest()) {
 
-            response.setHeader("Access-Control-Allow-Origin", "https://ittahub.web.app");
+            response.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
             response.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
             response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
             response.setHeader("Access-Control-Allow-Credentials", "true");
@@ -102,6 +102,3 @@ public class RateLimiterFilter extends OncePerRequestFilter {
     }
 
 }
-
-
-
